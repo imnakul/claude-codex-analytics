@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bot,
@@ -39,11 +39,15 @@ import {
   analyticsSnapshotSchema,
   modelRateSchema,
   type AnalyticsSnapshot,
+  type AnalyticsProvider,
   type ModelRate,
   type TokenRate,
 } from "@/lib/analytics-types";
 import {
   DEFAULT_MODEL_RATES,
+  CLAUDE_MODEL_RATES,
+  resolveModelRate,
+  estimateUsageCost,
   estimateThreadCost,
   estimateTurnCost,
 } from "@/lib/pricing";
@@ -51,7 +55,6 @@ import {
 const pricingStorageSchema = z.record(z.string(), modelRateSchema);
 const PRICING_STORAGE_KEY = "codex-analytics-ledger:model-rates:v2";
 const VIEW_MODE_STORAGE_KEY = "codex-analytics-ledger:view-mode:v1";
-const SUPPORTED_PRICING_MODELS = Object.keys(DEFAULT_MODEL_RATES);
 
 const sortOptionSchema = z.enum(["cost", "recent", "time", "tokens"]);
 type SortOption = z.infer<typeof sortOptionSchema>;
@@ -70,6 +73,7 @@ function buildModelAggregates(
     {
       cost: number;
       duration: number;
+      timed: number;
       label: string;
       priced: number;
       samples: number;
@@ -82,6 +86,7 @@ function buildModelAggregates(
     const existing = buckets.get(key) ?? {
       cost: 0,
       duration: 0,
+      timed: 0,
       label: `${shortModelName(item.thread.model)} / ${item.thread.reasoningEffort}`,
       priced: 0,
       samples: 0,
@@ -90,28 +95,33 @@ function buildModelAggregates(
     const turns = item.thread.turnDetails.filter((turn) => turn.totalTokens > 0);
     if (turns.length > 0) {
       for (const turn of turns) {
-        const turnKey = `${turn.model}:${turn.reasoningEffort}`;
-        const turnBucket = buckets.get(turnKey) ?? {
-          cost: 0,
-          duration: 0,
-          label: `${shortModelName(turn.model)} / ${turn.reasoningEffort}`,
-          priced: 0,
-          samples: 0,
-          tokens: 0,
-        };
-        const turnCost = estimateTurnCost(turn, rates);
-        turnBucket.duration += turn.durationMs;
-        turnBucket.samples += 1;
-        turnBucket.tokens += turn.totalTokens;
-        if (turnCost) {
-          turnBucket.cost += turnCost.total;
-          turnBucket.priced += 1;
+        const models = new Set(turn.requestUsage.map(usage => usage.model));
+        const sampleModels = models.size ? [...models] : [turn.model];
+        for (const model of sampleModels) {
+          const turnKey = `${model}:${turn.reasoningEffort}`;
+          const turnBucket = buckets.get(turnKey) ?? {
+            cost: 0, duration: 0, timed: 0,
+            label: `${shortModelName(model)} / ${turn.reasoningEffort}`,
+            priced: 0, samples: 0, tokens: 0,
+          };
+          const requests = turn.requestUsage.filter(usage => usage.model === model);
+          const requestCosts = requests.map(usage => estimateUsageCost(usage, rates));
+          const cost = requests.length
+            ? requestCosts.every(cost => cost !== null) ? requestCosts.reduce((sum, cost) => sum + cost!.total, 0) : null
+            : estimateTurnCost(turn, rates)?.total ?? null;
+          // A mixed-model turn cannot provide a runtime for each individual model.
+          if (sampleModels.length === 1) { turnBucket.duration += turn.durationMs; turnBucket.timed += 1; }
+          turnBucket.samples += 1;
+          turnBucket.tokens += requests.length
+            ? requests.reduce((sum, usage) => sum + usage.inputTokens + usage.outputTokens, 0) : turn.totalTokens;
+          if (cost !== null) { turnBucket.cost += cost; turnBucket.priced += 1; }
+          buckets.set(turnKey, turnBucket);
         }
-        buckets.set(turnKey, turnBucket);
       }
       continue;
     }
     existing.duration += item.thread.activeDurationMs;
+    existing.timed += 1;
     existing.samples += 1;
     existing.tokens += item.thread.totalTokens;
     if (item.cost) {
@@ -124,7 +134,7 @@ function buildModelAggregates(
   return Array.from(buckets.entries())
     .map(([key, value]) => ({
       averageCost: value.priced > 0 ? value.cost / value.priced : null,
-      averageDurationMs: value.duration / value.samples,
+      averageDurationMs: value.timed ? value.duration / value.timed : null,
       averageTokens: value.tokens / value.samples,
       key,
       label: value.label,
@@ -136,7 +146,7 @@ function buildModelAggregates(
 }
 
 function getDefaultRates(): Record<string, ModelRate> {
-  return { ...DEFAULT_MODEL_RATES };
+  return { ...DEFAULT_MODEL_RATES, ...CLAUDE_MODEL_RATES };
 }
 
 function projectSortValue(items: PricedThread[], sort: SortOption): number {
@@ -164,6 +174,9 @@ export function CodexDashboard({
   initialData,
 }: CodexDashboardProps): React.ReactNode {
   const [snapshot, setSnapshot] = useState(initialData);
+  const provider = snapshot.provider;
+  const providerLabel = provider === "claude" ? "Claude" : "Codex";
+  const requestSequence = useRef(0);
   const [query, setQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
@@ -185,7 +198,7 @@ export function CodexDashboard({
         new Set(
           snapshot.threads.flatMap((thread) => [
             thread.model,
-            ...thread.turnDetails.map((turn) => turn.model),
+            ...thread.turnDetails.flatMap((turn) => [turn.model, ...turn.requestUsage.map(usage => usage.model)]),
           ]),
         ),
       ).sort(),
@@ -239,15 +252,16 @@ export function CodexDashboard({
     );
   }, [groupByProject, viewModeHydrated]);
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (nextProvider: AnalyticsProvider = provider): Promise<void> => {
     if (document.visibilityState === "hidden") {
       return;
     }
 
+    const sequence = ++requestSequence.current;
     setRefreshing(true);
     setRefreshError(null);
     try {
-      const response = await fetch(`/api/analytics?refresh=${Date.now()}`, {
+      const response = await fetch(`/api/analytics?provider=${nextProvider}&refresh=${Date.now()}`, {
         cache: "no-store",
         headers: { "Cache-Control": "no-cache" },
       });
@@ -258,16 +272,25 @@ export function CodexDashboard({
           errorPayload.success ? errorPayload.data.error : "Analytics refresh failed.",
         );
       }
-      setSnapshot(analyticsSnapshotSchema.parse(raw));
+      const next = analyticsSnapshotSchema.parse(raw);
+      if (sequence !== requestSequence.current) return;
+      if (next.provider !== provider) {
+        setQuery(""); setProjectFilter("all"); setModelFilter("all");
+        setEffortFilter("all"); setSelectedThread(null); setPricingOpen(false);
+      }
+      setSnapshot(next);
+      const url = new URL(window.location.href);
+      url.searchParams.set("provider", next.provider);
+      window.history.replaceState(null, "", url);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Analytics refresh failed.";
       console.error("[codex-analytics-ledger] Refresh failed", error);
-      setRefreshError(message);
+      if (sequence === requestSequence.current) setRefreshError(message);
     } finally {
-      setRefreshing(false);
+      if (sequence === requestSequence.current) setRefreshing(false);
     }
-  }, []);
+  }, [provider]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -306,7 +329,7 @@ export function CodexDashboard({
         (projectFilter === "all" || thread.projectName === projectFilter) &&
         (modelFilter === "all" ||
           thread.model === modelFilter ||
-          thread.turnDetails.some((turn) => turn.model === modelFilter)) &&
+          thread.turnDetails.some((turn) => turn.model === modelFilter || turn.requestUsage.some(usage => usage.model === modelFilter))) &&
         (effortFilter === "all" || thread.reasoningEffort === effortFilter)
       );
     });
@@ -376,7 +399,7 @@ export function CodexDashboard({
       value: number | null,
     ): void => {
       setRates((current) => {
-        const existing = current[model] ?? {
+        const existing = resolveModelRate(model, current) ?? {
           long: null,
           short: { cachedInput: 0, cacheWrite: null, input: 0, output: 0 },
         };
@@ -445,6 +468,20 @@ export function CodexDashboard({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <div aria-label="Analytics provider" className="flex border border-[#35382f] p-1" role="group">
+                {(["codex", "claude"] as const).map(value => (
+                  <button
+                    aria-pressed={provider === value}
+                    className={`px-4 py-2 text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-[#d7ff5f] ${provider === value ? "bg-[#d7ff5f] text-[#172000]" : "text-[#a5aa9a] hover:text-[#f1ecdf]"}`}
+                    disabled={refreshing}
+                    key={value}
+                    onClick={() => { if (value !== provider) void refresh(value); }}
+                    type="button"
+                  >
+                    {value === "claude" ? "Claude" : "Codex"}
+                  </button>
+                ))}
+              </div>
               <button
                 aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
                 className="flex size-10 items-center justify-center border border-[#35382f] text-[#a5aa9a] outline-none transition-colors hover:border-[#88bfff] hover:text-[#88bfff] focus-visible:ring-2 focus-visible:ring-[#d7ff5f]"
@@ -481,7 +518,7 @@ export function CodexDashboard({
                 {autoRefresh ? "Live / 15s" : "Paused"}
               </button>
               <button
-                aria-label="Refresh Codex analytics now"
+                aria-label={`Refresh ${providerLabel} analytics now`}
                 className="flex size-10 items-center justify-center border border-[#35382f] text-[#a5aa9a] outline-none transition-colors hover:border-[#d7ff5f] hover:text-[#d7ff5f] focus-visible:ring-2 focus-visible:ring-[#d7ff5f]"
                 disabled={refreshing}
                 onClick={() => void refresh()}
@@ -510,7 +547,7 @@ export function CodexDashboard({
           <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[10px] text-[#676c5e]">
             <span className="flex items-center gap-1.5">
               <Database aria-hidden="true" size={12} />
-              {snapshot.threads.length} indexed threads
+              {providerLabel} / {snapshot.threads.length} indexed sessions
             </span>
             <span>Updated {new Date(snapshot.generatedAt).toLocaleTimeString()}</span>
             <span className="hidden max-w-xl truncate sm:inline">
@@ -528,6 +565,15 @@ export function CodexDashboard({
             <WifiOff aria-hidden="true" className="mt-0.5 shrink-0" size={16} />
             <p>{refreshError}. Showing the last successful snapshot.</p>
           </div>
+        ) : null}
+
+        {snapshot.warnings.length > 0 ? (
+          <details className="mt-4 border border-[#35382f] bg-[#171914] p-3 text-xs leading-5 text-[#a5aa9a]" open={snapshot.threads.length === 0}>
+            <summary className="cursor-pointer font-semibold">{providerLabel} data notes ({snapshot.warnings.length})</summary>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {snapshot.warnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}
+            </ul>
+          </details>
         ) : null}
 
         <section
@@ -557,7 +603,7 @@ export function CodexDashboard({
           />
           <SummaryCard
             accent="paper"
-            detail="Sum of Codex-reported active turn durations"
+            detail={provider === "claude" ? "Reported durations with elapsed-time fallbacks" : "Sum of Codex-reported active turn durations"}
             icon={Clock3}
             label="Active runtime"
             value={formatDuration(visibleTime)}
@@ -734,7 +780,8 @@ export function CodexDashboard({
         rates={rates}
       />
       <PricingDialog
-        models={SUPPORTED_PRICING_MODELS}
+        provider={provider}
+        models={Array.from(new Set([...Object.keys(provider === "claude" ? CLAUDE_MODEL_RATES : DEFAULT_MODEL_RATES), ...observedModels])).filter(model => model !== "Unknown model").sort()}
         onChange={updateRate}
         onClose={() => setPricingOpen(false)}
         onReset={resetRates}

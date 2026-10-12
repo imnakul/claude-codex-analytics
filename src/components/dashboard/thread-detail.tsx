@@ -85,6 +85,8 @@ export function ThreadDetail({
     return null;
   }
 
+  const isClaude = item.thread.source.startsWith("Claude");
+  const toolCalls = item.thread.turnDetails.flatMap(turn => turn.toolCallDetails);
   const cacheRatio =
     item.thread.inputTokens > 0
       ? item.thread.cachedInputTokens / item.thread.inputTokens
@@ -132,6 +134,13 @@ export function ThreadDetail({
         </header>
 
         <div className="space-y-7 p-5 sm:p-7">
+          {isClaude ? (
+            <p className="text-xs leading-5 text-[#a5aa9a]">
+              Runtime: {item.thread.durationSource === "reported" ? "reported by Claude" : item.thread.durationSource === "mixed" ? "reported durations and elapsed-time estimates" : "estimated from saved timestamps"}.
+              {item.thread.parentSessionId ? ` Parent session: ${item.thread.parentSessionId}.` : ""}
+              {item.thread.hasDetailedUsage ? "" : " Token usage is unavailable for this session."}
+            </p>
+          ) : null}
           <section className="grid grid-cols-2 gap-5 border border-[#30332b] bg-[#171914] p-4 sm:grid-cols-3">
             <DetailMetric
               label="Estimated cost"
@@ -143,7 +152,7 @@ export function ThreadDetail({
             />
             <DetailMetric
               label="Total tokens"
-              value={formatTokens(item.thread.totalTokens)}
+              value={item.thread.hasDetailedUsage || !isClaude ? formatTokens(item.thread.totalTokens) : "Unknown"}
             />
             <DetailMetric
               label="Cache hit"
@@ -226,7 +235,7 @@ export function ThreadDetail({
                           </p>
                         </td>
                         <td className="px-3 py-3 font-mono text-xs text-[#dcd7ca]">
-                          {turn.completed ? formatDuration(turn.durationMs) : "Running"}
+                          {!turn.completed && item.thread.isPossiblyActive && index === 0 ? "Running" : formatDuration(turn.durationMs)}
                           <p className="mt-1 text-[10px] text-[#73786a]">
                             TTFT {turn.timeToFirstTokenMs === null ? "--" : formatDuration(turn.timeToFirstTokenMs)}
                           </p>
@@ -254,6 +263,35 @@ export function ThreadDetail({
               </p>
             )}
           </section>
+
+          {isClaude ? (
+            <section aria-labelledby="tool-ledger-heading">
+              <h3 className="font-display text-base font-semibold text-[#eee8dc]" id="tool-ledger-heading">
+                Tool calls ({toolCalls.length})
+              </h3>
+              {toolCalls.length ? (
+                <div className="mt-4 overflow-x-auto border border-[#30332b]">
+                  <table className="w-full text-left text-xs">
+                    <caption className="sr-only">Saved tool calls, outcomes, elapsed time, and record source</caption>
+                    <thead className="bg-[#1c1e18] text-[#a5aa9a]">
+                      <tr>{["Tool", "Started", "Status", "Time", "Source"].map(label => <th className="px-3 py-3" key={label} scope="col">{label}</th>)}</tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#292c25] text-[#dcd7ca]">
+                      {toolCalls.map(call => (
+                        <tr key={call.id}>
+                          <td className="px-3 py-3 font-mono">{call.name}</td>
+                          <td className="whitespace-nowrap px-3 py-3">{formatDateTime(call.startedAt)}</td>
+                          <td className="px-3 py-3">{call.status}</td>
+                          <td className="px-3 py-3">{call.durationMs === null ? "Unknown" : formatDuration(call.durationMs)}</td>
+                          <td className="px-3 py-3">{call.source}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p className="mt-3 text-xs text-[#a5aa9a]">No tool calls were found in the saved records.</p>}
+            </section>
+          ) : null}
 
           <section aria-labelledby="identity-heading">
             <div className="flex items-center gap-2">
@@ -316,6 +354,12 @@ export function ThreadDetail({
                   {formatTokens(item.thread.cachedInputTokens)}
                 </dd>
               </div>
+              {isClaude ? (
+                <div className="bg-[#171914] p-4">
+                  <dt className="text-xs text-[#74796a]">Cache writes (5m / 1h)</dt>
+                  <dd className="mt-2 font-mono text-base text-[#e0dbcf]">{formatTokens(item.thread.cacheWriteTokens - item.thread.cacheWriteLongTokens)} / {formatTokens(item.thread.cacheWriteLongTokens)}</dd>
+                </div>
+              ) : null}
               <div className="bg-[#171914] p-4">
                 <dt className="text-xs text-[#74796a]">Output</dt>
                 <dd className="mt-2 font-mono text-base text-[#e0dbcf]">
@@ -325,7 +369,7 @@ export function ThreadDetail({
               <div className="bg-[#171914] p-4">
                 <dt className="text-xs text-[#74796a]">Reasoning output</dt>
                 <dd className="mt-2 font-mono text-base text-[#e0dbcf]">
-                  {formatTokens(item.thread.reasoningOutputTokens)}
+                  {isClaude ? "Unknown" : formatTokens(item.thread.reasoningOutputTokens)}
                 </dd>
               </div>
             </dl>
@@ -362,6 +406,10 @@ export function ThreadDetail({
                     {formatCurrency(item.cost.cacheReadCost)}
                   </dd>
                 </div>
+                {isClaude ? <div className="flex justify-between border-b border-[#292c25] pb-3">
+                  <dt className="text-[#777c6d]">Cache writes</dt>
+                  <dd className="font-mono text-[#dcd7ca]">{formatCurrency(item.cost.cacheWriteCost)}</dd>
+                </div> : null}
                 <div className="flex justify-between border-b border-[#292c25] pb-3">
                   <dt className="text-[#777c6d]">Output</dt>
                   <dd className="font-mono text-[#dcd7ca]">

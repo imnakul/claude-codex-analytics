@@ -32,8 +32,9 @@ Codex Analytics Ledger is pre-1.0 software. It reads internal Codex SQLite and
 JSONL formats that may change between Codex releases. A Codex update can require
 a corresponding reader update even when this repository has not changed.
 
-The current release has no automated test suite. TypeScript, ESLint, and a
-production build are used as the required verification baseline.
+Synthetic tests cover Claude ingestion, tool-log reconciliation, pricing, and
+provider selection. Tests, TypeScript, ESLint, and a production build are the
+required verification baseline.
 
 ## What it shows
 
@@ -55,7 +56,7 @@ toggle to include them.
 ## Requirements
 
 - Node.js 24 or newer
-- A local Codex installation with a readable `CODEX_HOME` directory
+- Local Codex state with a readable `CODEX_HOME`, or saved Claude Code sessions
 - Windows, macOS, or Linux
 
 Node.js 24 or newer is required because the reader uses the built-in
@@ -93,6 +94,93 @@ The development and production scripts explicitly bind to `127.0.0.1`, so the
 server accepts connections only from the same machine. They also set
 `NEXT_TELEMETRY_DISABLED=1`. Running Next.js directly instead of using the
 included scripts may use Next.js defaults.
+
+## Switch between Codex and Claude
+
+Use the **Codex / Claude** switch at the top of the dashboard. Both providers use
+this same local app; the repository, package name, and branding stay unchanged.
+You can open `http://localhost:3000/?provider=claude` directly, including on a
+machine with no Codex installation. Switching resets provider-specific filters
+and closes the selected session. Refresh always reads the selected provider.
+
+Claude support targets **Claude Code** saved local data:
+
+- `~/.claude/projects/**/*.jsonl`: sessions, prompts, per-request token usage,
+  executed tools, tool results, models, and reported turn durations.
+- Nested `subagents/agent-*.jsonl` and older sidechain files: worker sessions,
+  hidden until **Workers** is enabled. Worker usage remains separate from its
+  parent to avoid inflating the parent session's totals.
+- `~/.claude/history.jsonl` and project `sessions-index.json`: retained session
+  metadata. Sessions with missing transcripts remain visible with unknown cost
+  and token usage.
+- Optional timestamped JSONL tool-hook logs: additional tool attempts, outcomes,
+  and timings, matched to transcript calls by `tool_use_id`.
+
+Override `CLAUDE_CONFIG_DIR` in `.env.local` when Claude data is elsewhere.
+It points to the Claude data directory containing `projects` and `history.jsonl`.
+The app does not execute Claude, alter its settings, or upload session data.
+Claude web conversations and Desktop data are not imported by this reader.
+
+Claude input totals include ordinary input, cache reads, and cache writes.
+Repeated transcript content blocks for one API message are counted once. Cost
+uses each recorded request's model and prompt size separately, including 5-minute
+and 1-hour cache writes. Default first-party Claude rates were checked on
+October 12, 2026 against the [Claude pricing documentation](https://platform.claude.com/docs/en/about-claude/pricing).
+Dated model IDs inherit the corresponding base model's rate; exact-ID overrides
+can be edited in **Pricing**. Unknown model prices remain unknown until configured.
+These are API-equivalent estimates, not a Claude subscription bill; fast mode,
+regional pricing, discounts, server-tool charges, and other billing adjustments
+are excluded.
+
+Missing usage is not reconstructed. TTFT, separate reasoning-token counts, and
+context limits are unknown when not recorded. Runtime uses `turn_duration`
+records when available and otherwise estimates elapsed time from the user prompt
+to the last saved assistant/tool event; estimates may include waits. Data notes
+explain incomplete records and malformed lines, including in-progress writes.
+
+### Optional Claude tool logging
+
+Ordinary Claude Code transcripts already contain executed tool calls, so you do
+not need to enable extra logging to see those calls. To retain future tool
+attempts and failures as well, the included `scripts/log-claude-tool.py` collector
+can be configured as a Claude Code hook. It requires Python 3 and saves only
+metadata: tool name, IDs, timestamp, working directory, event type, and optional
+agent ID. It omits tool arguments, tool responses, and error-message content.
+
+Merge the following into your Claude Code `settings.json` hooks, preserving your
+existing hooks. Replace the example command with an absolute path to your copy
+of this repository; use `py` instead of `python3` if appropriate on Windows.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "python3 /absolute/path/codex-analytics/scripts/log-claude-tool.py" }] }],
+    "PostToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "python3 /absolute/path/codex-analytics/scripts/log-claude-tool.py" }] }],
+    "PostToolUseFailure": [{ "matcher": "", "hooks": [{ "type": "command", "command": "python3 /absolute/path/codex-analytics/scripts/log-claude-tool.py" }] }]
+  }
+}
+```
+
+The collector writes `~/.claude/analytics-tools/tools.jsonl` (or beneath your
+`CLAUDE_CONFIG_DIR`); the dashboard discovers that directory automatically.
+Set `CLAUDE_LOG_DIR` in both the Claude process and the dashboard environment to
+use another log directory. Enabling logging only captures future events.
+See [Claude Code hooks](https://code.claude.com/docs/en/hooks) for hook setup.
+
+Existing hook logs can be used if each JSONL record contains this shape:
+
+```json
+{"timestamp":"2026-10-12T00:00:00Z","session_id":"session-example","tool_use_id":"tool-example","tool_name":"Bash","hook_event_name":"PreToolUse"}
+```
+
+`timestamp` accepts an ISO date or epoch milliseconds. Supported event types are
+`PreToolUse`, `PostToolUse`, and `PostToolUseFailure`; `cwd` and `agent_id` are
+optional. Post-only records have unknown duration unless a transcript establishes
+the start time. Native hook payloads need timestamps added by a collector. Plain
+text debug logs, aggregate stats caches, and arbitrary telemetry formats are not
+parsed as individual tool calls. Deleted or unsaved historical events cannot be
+recovered. Assistant text, thinking, tool arguments, and tool output remain off
+the analytics API; user prompt snippets remain local as in the Codex view.
 
 ## Configure Codex state
 
@@ -253,6 +341,9 @@ Then open <http://localhost:3001>.
 ```text
 src/app/api/analytics/route.ts        Local read-only analytics endpoint
 src/lib/codex-reader.ts               Codex SQLite and JSONL reader
+src/lib/claude-reader.ts              Claude transcripts, history, and hook logs
+scripts/log-claude-tool.py            Optional metadata-only Claude hook collector
+tests/                               Synthetic compatibility and pricing tests
 src/lib/analytics-types.ts            Runtime validation and shared types
 src/lib/pricing.ts                    API-equivalent cost estimation
 src/components/dashboard/             Dashboard UI and detail views
@@ -265,13 +356,14 @@ CHANGELOG.md                           User-facing release history
 ## Verification
 
 ```bash
+npm run test
 npx tsc --noEmit
 npx eslint . --fix
 npm run build
 ```
 
-The project does not yet have automated unit or integration tests. Do not treat a
-successful build as proof that every Codex state version is compatible.
+Tests use synthetic local data and do not guarantee compatibility with every
+Codex or Claude Code state version. Check saved format changes after upgrades.
 
 ## Roadmap
 

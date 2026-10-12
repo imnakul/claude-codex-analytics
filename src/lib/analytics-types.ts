@@ -1,5 +1,27 @@
 import { z } from "zod";
 
+export const analyticsProviderSchema = z.enum(["codex", "claude"]);
+export type AnalyticsProvider = z.infer<typeof analyticsProviderSchema>;
+
+export const toolCallSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  startedAt: z.string(),
+  durationMs: z.number().nonnegative().nullable(),
+  status: z.enum(["recorded", "completed", "failed"]),
+  source: z.enum(["transcript", "hook"]),
+});
+
+export const requestUsageSchema = z.object({
+  model: z.string(),
+  inputTokens: z.number().int().nonnegative(),
+  peakInputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  cacheWriteLongTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative(),
+});
+
 export const threadTurnAnalyticsSchema = z.object({
   id: z.string(),
   message: z.string(),
@@ -18,6 +40,10 @@ export const threadTurnAnalyticsSchema = z.object({
   shellCommands: z.number().int().nonnegative(),
   webCalls: z.number().int().nonnegative(),
   completed: z.boolean(),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  cacheWriteLongTokens: z.number().int().nonnegative().default(0),
+  toolCallDetails: z.array(toolCallSchema).default([]),
+  requestUsage: z.array(requestUsageSchema).default([]),
 });
 
 export const threadAnalyticsSchema = z.object({
@@ -50,9 +76,15 @@ export const threadAnalyticsSchema = z.object({
   internal: z.boolean(),
   hasDetailedUsage: z.boolean(),
   isPossiblyActive: z.boolean(),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  cacheWriteLongTokens: z.number().int().nonnegative().default(0),
+  durationSource: z.enum(["reported", "estimated", "mixed"]).default("reported"),
+  parentSessionId: z.string().nullable().default(null),
 });
 
 export const analyticsSnapshotSchema = z.object({
+  provider: analyticsProviderSchema.default("codex"),
+  dataHome: z.string().default(""),
   generatedAt: z.string(),
   databasePath: z.string(),
   codexHome: z.string(),
@@ -65,11 +97,13 @@ export const tokenRateSchema = z.object({
   output: z.number().nonnegative(),
   cachedInput: z.number().nonnegative().nullable(),
   cacheWrite: z.number().nonnegative().nullable(),
+  cacheWriteLong: z.number().nonnegative().nullable().optional(),
 });
 
 export const modelRateSchema = z.object({
   short: tokenRateSchema,
   long: tokenRateSchema.nullable(),
+  longContextThreshold: z.number().int().positive().optional(),
 });
 
 export type AnalyticsSnapshot = z.infer<typeof analyticsSnapshotSchema>;

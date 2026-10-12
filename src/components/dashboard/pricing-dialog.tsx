@@ -3,10 +3,12 @@
 import { useEffect } from "react";
 import { Info, RotateCcw, X } from "lucide-react";
 
-import type { ModelRate, TokenRate } from "@/lib/analytics-types";
+import type { AnalyticsProvider, ModelRate, TokenRate } from "@/lib/analytics-types";
+import { resolveModelRate } from "@/lib/pricing";
 import { shortModelName } from "@/components/dashboard/formatting";
 
 interface PricingDialogProps {
+  provider: AnalyticsProvider;
   models: string[];
   onChange: (
     model: string,
@@ -73,6 +75,7 @@ function RateInput({
 }
 
 export function PricingDialog({
+  provider,
   models,
   onChange,
   onClose,
@@ -143,16 +146,15 @@ export function PricingDialog({
           <div className="flex gap-3 border border-[#3d4136] bg-[#1c1f18] p-4 text-xs leading-5 text-[#969b8b]">
             <Info aria-hidden="true" className="mt-0.5 shrink-0 text-[#88bfff]" size={16} />
             <p>
-              Defaults are the OpenAI rates you supplied. Long-context rates apply
-              when a recorded prompt exceeds 272K input tokens. Cache-write rates
-              are shown for reference but excluded because local Codex logs do not
-              expose cache-write token counts.
+              {provider === "claude"
+                ? "Defaults use Claude first-party API list prices checked October 12, 2026. Each saved request is priced separately, including cache reads and 5-minute / 1-hour writes. These estimates exclude fast mode, regional premiums, tool charges, discounts, and subscription billing. Unknown models need a saved rate."
+                : "Defaults are the OpenAI rates you supplied. Long-context rates apply when a recorded prompt exceeds 272K input tokens. Codex does not expose cache-write token counts, so cache writes are excluded."}
             </p>
           </div>
 
           <div className="mt-5 divide-y divide-[#30332b] border-y border-[#30332b]">
             {models.map((model) => {
-              const rate = rates[model] ?? {
+              const rate = resolveModelRate(model, rates) ?? {
                 long: null,
                 short: {
                   cachedInput: 0,
@@ -179,10 +181,11 @@ export function PricingDialog({
                       <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.16em] text-[#858a7a]">
                         Short context
                       </p>
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                         <RateInput context="short" field="input" label="Input" model={model} onChange={onChange} value={rate.short.input} />
                         <RateInput context="short" field="cachedInput" label="Cached" model={model} nullable onChange={onChange} value={rate.short.cachedInput} />
-                        <RateInput context="short" field="cacheWrite" label="Cache write" model={model} nullable onChange={onChange} value={rate.short.cacheWrite} />
+                        <RateInput context="short" field="cacheWrite" label="5m cache write" model={model} nullable onChange={onChange} value={rate.short.cacheWrite} />
+                        {provider === "claude" ? <RateInput context="short" field="cacheWriteLong" label="1h cache write" model={model} nullable onChange={onChange} value={rate.short.cacheWriteLong ?? null} /> : null}
                         <RateInput context="short" field="output" label="Output" model={model} onChange={onChange} value={rate.short.output} />
                       </div>
                     </div>
@@ -191,10 +194,11 @@ export function PricingDialog({
                         <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.16em] text-[#858a7a]">
                           Long context
                         </p>
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                           <RateInput context="long" field="input" label="Input" model={model} onChange={onChange} value={rate.long.input} />
                           <RateInput context="long" field="cachedInput" label="Cached" model={model} nullable onChange={onChange} value={rate.long.cachedInput} />
-                          <RateInput context="long" field="cacheWrite" label="Cache write" model={model} nullable onChange={onChange} value={rate.long.cacheWrite} />
+                          <RateInput context="long" field="cacheWrite" label="5m cache write" model={model} nullable onChange={onChange} value={rate.long.cacheWrite} />
+                          {provider === "claude" ? <RateInput context="long" field="cacheWriteLong" label="1h cache write" model={model} nullable onChange={onChange} value={rate.long.cacheWriteLong ?? null} /> : null}
                           <RateInput context="long" field="output" label="Output" model={model} onChange={onChange} value={rate.long.output} />
                         </div>
                       </div>

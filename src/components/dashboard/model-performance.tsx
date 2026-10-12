@@ -67,7 +67,7 @@ export function ModelPerformance({
                   <div>
                     <dt className="text-[#636859]">Avg. runtime</dt>
                     <dd className="mt-1 font-mono text-[#c9c5b9]">
-                      {formatDuration(model.averageDurationMs)}
+                      {model.averageDurationMs === null ? "Unknown" : formatDuration(model.averageDurationMs)}
                     </dd>
                   </div>
                   <div>
