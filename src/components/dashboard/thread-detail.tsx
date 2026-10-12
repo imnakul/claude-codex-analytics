@@ -138,7 +138,8 @@ export function ThreadDetail({
             <p className="text-xs leading-5 text-[#a5aa9a]">
               Runtime: {item.thread.durationSource === "reported" ? "reported by Claude" : item.thread.durationSource === "mixed" ? "reported durations and elapsed-time estimates" : "estimated from saved timestamps"}.
               {item.thread.parentSessionId ? ` Parent session: ${item.thread.parentSessionId}.` : ""}
-              {item.thread.hasDetailedUsage ? "" : " Token usage is unavailable for this session."}
+              {item.thread.usageCoverage === "partial" ? " Token totals are partial; the full session cost is unknown."
+                : item.thread.hasDetailedUsage ? "" : " Token usage is unavailable for this session."}
             </p>
           ) : null}
           <section className="grid grid-cols-2 gap-5 border border-[#30332b] bg-[#171914] p-4 sm:grid-cols-3">
@@ -241,9 +242,9 @@ export function ThreadDetail({
                           </p>
                         </td>
                         <td className="px-3 py-3 font-mono text-xs text-[#dcd7ca]">
-                          {formatTokens(turn.totalTokens)}
+                          {turn.usageCoverage === "unknown" ? "Unknown" : formatTokens(turn.totalTokens)}
                           <p className="mt-1 text-[10px] text-[#73786a]">
-                            {formatTokens(turn.outputTokens)} out
+                            {turn.usageCoverage === "unknown" ? "No saved usage" : `${formatTokens(turn.outputTokens)} out${turn.usageCoverage === "partial" ? " / partial" : ""}`}
                           </p>
                         </td>
                         <td className="px-3 py-3 text-right font-mono text-xs font-bold text-[#d7ff5f]">
@@ -420,7 +421,9 @@ export function ThreadDetail({
               </>
             ) : (
               <p className="mt-4 border border-dashed border-[#3a3e34] p-4 text-sm leading-6 text-[#858a7a]">
-                Add pricing for {item.thread.model} to calculate this thread.
+                {item.thread.usageCoverage === "partial" || item.thread.usageCoverage === "unknown"
+                  ? "Complete token usage is unavailable, so the full session cost cannot be calculated."
+                  : `Add pricing for ${item.thread.model} to calculate this thread.`}
               </p>
             )}
           </section>

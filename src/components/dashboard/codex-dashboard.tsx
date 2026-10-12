@@ -176,7 +176,7 @@ export function CodexDashboard({
   const [snapshot, setSnapshot] = useState(initialData);
   const provider = snapshot.provider;
   const providerLabel = provider === "claude" ? "Claude" : "Codex";
-  const requestSequence = useRef(0);
+  const refreshInFlight = useRef(false);
   const [query, setQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
@@ -189,7 +189,7 @@ export function CodexDashboard({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [pricingOpen, setPricingOpen] = useState(false);
-  const [selectedThread, setSelectedThread] = useState<PricedThread | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
 
   const observedModels = useMemo(
@@ -253,11 +253,11 @@ export function CodexDashboard({
   }, [groupByProject, viewModeHydrated]);
 
   const refresh = useCallback(async (nextProvider: AnalyticsProvider = provider): Promise<void> => {
-    if (document.visibilityState === "hidden") {
+    if (document.visibilityState === "hidden" || refreshInFlight.current) {
       return;
     }
 
-    const sequence = ++requestSequence.current;
+    refreshInFlight.current = true;
     setRefreshing(true);
     setRefreshError(null);
     try {
@@ -273,10 +273,9 @@ export function CodexDashboard({
         );
       }
       const next = analyticsSnapshotSchema.parse(raw);
-      if (sequence !== requestSequence.current) return;
       if (next.provider !== provider) {
         setQuery(""); setProjectFilter("all"); setModelFilter("all");
-        setEffortFilter("all"); setSelectedThread(null); setPricingOpen(false);
+        setEffortFilter("all"); setSelectedThreadId(null); setPricingOpen(false);
       }
       setSnapshot(next);
       const url = new URL(window.location.href);
@@ -286,9 +285,10 @@ export function CodexDashboard({
       const message =
         error instanceof Error ? error.message : "Analytics refresh failed.";
       console.error("[codex-analytics-ledger] Refresh failed", error);
-      if (sequence === requestSequence.current) setRefreshError(message);
+      setRefreshError(message);
     } finally {
-      if (sequence === requestSequence.current) setRefreshing(false);
+      refreshInFlight.current = false;
+      setRefreshing(false);
     }
   }, [provider]);
 
@@ -314,6 +314,14 @@ export function CodexDashboard({
       })),
     [rates, snapshot.threads],
   );
+
+  const selectedThread = useMemo(
+    () => pricedThreads.find(item => item.thread.id === selectedThreadId) ?? null,
+    [pricedThreads, selectedThreadId],
+  );
+  const selectThread = useCallback((item: PricedThread): void => {
+    setSelectedThreadId(item.thread.id);
+  }, []);
 
   const filteredThreads = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -370,6 +378,9 @@ export function CodexDashboard({
     (sum, item) => sum + item.thread.activeDurationMs,
     0,
   );
+  const incompleteUsageCount = filteredThreads.filter(item =>
+    item.thread.usageCoverage === "partial" || item.thread.usageCoverage === "unknown",
+  ).length;
   const visibleProjects = new Set(
     filteredThreads.map((item) => item.thread.projectName),
   ).size;
@@ -589,7 +600,7 @@ export function CodexDashboard({
           />
           <SummaryCard
             accent="blue"
-            detail="Session-reported total token usage"
+            detail={incompleteUsageCount ? `Recorded totals; ${incompleteUsageCount} sessions have incomplete usage` : "Session-reported total token usage"}
             icon={Sparkles}
             label="Token volume"
             value={formatTokens(visibleTokens)}
@@ -748,14 +759,14 @@ export function CodexDashboard({
                     </summary>
                     <ThreadTable
                       items={items}
-                      onSelect={setSelectedThread}
+                      onSelect={selectThread}
                       showProject={false}
                     />
                   </details>
                 ))}
               </div>
             ) : (
-              <ThreadTable items={filteredThreads} onSelect={setSelectedThread} />
+              <ThreadTable items={filteredThreads} onSelect={selectThread} />
             )}
           </section>
           <div className="xl:sticky xl:top-5">
@@ -776,7 +787,7 @@ export function CodexDashboard({
 
       <ThreadDetail
         item={selectedThread}
-        onClose={() => setSelectedThread(null)}
+        onClose={() => setSelectedThreadId(null)}
         rates={rates}
       />
       <PricingDialog

@@ -101,7 +101,8 @@ Use the **Codex / Claude** switch at the top of the dashboard. Both providers us
 this same local app; the repository, package name, and branding stay unchanged.
 You can open `http://localhost:3000/?provider=claude` directly, including on a
 machine with no Codex installation. Switching resets provider-specific filters
-and closes the selected session. Refresh always reads the selected provider.
+and closes the selected session. Refresh always reads the selected provider,
+avoids overlapping reads, and updates open session details as new records arrive.
 
 Claude support targets **Claude Code** saved local data:
 
@@ -111,7 +112,7 @@ Claude support targets **Claude Code** saved local data:
   hidden until **Workers** is enabled. Worker usage remains separate from its
   parent to avoid inflating the parent session's totals.
 - `~/.claude/history.jsonl` and project `sessions-index.json`: retained session
-  metadata. Sessions with missing transcripts remain visible with unknown cost
+  metadata and every saved history prompt. Sessions with missing transcripts remain visible with unknown cost
   and token usage.
 - Optional timestamped JSONL tool-hook logs: additional tool attempts, outcomes,
   and timings, matched to transcript calls by `tool_use_id`.
@@ -132,7 +133,9 @@ These are API-equivalent estimates, not a Claude subscription bill; fast mode,
 regional pricing, discounts, server-tool charges, and other billing adjustments
 are excluded.
 
-Missing usage is not reconstructed. TTFT, separate reasoning-token counts, and
+Image and document prompts are counted without returning attachment contents.
+Missing usage is not reconstructed. Sessions with partial counters display their
+recorded token totals while leaving their full session cost unknown. TTFT, separate reasoning-token counts, and
 context limits are unknown when not recorded. Runtime uses `turn_duration`
 records when available and otherwise estimates elapsed time from the user prompt
 to the last saved assistant/tool event; estimates may include waits. Data notes

@@ -94,6 +94,7 @@ export interface CostEstimate {
 }
 
 interface UsageForCost {
+  hasCompleteUsage?: boolean;
   cacheWriteTokens?: number;
   cacheWriteLongTokens?: number;
   cachedInputTokens: number;
@@ -107,6 +108,7 @@ export function estimateUsageCost(
   usage: UsageForCost,
   rates: Readonly<Record<string, ModelRate>>,
 ): CostEstimate | null {
+  if (usage.hasCompleteUsage === false) return null;
   const rate = resolveModelRate(usage.model, rates);
   if (!rate) {
     return null;
@@ -147,6 +149,7 @@ export function estimateTurnCost(
   turn: ThreadTurnAnalytics,
   rates: Readonly<Record<string, ModelRate>>,
 ): CostEstimate | null {
+  if (turn.usageCoverage === "partial" || turn.usageCoverage === "unknown") return null;
   if (turn.requestUsage.length) {
     const costs = turn.requestUsage.map(usage => estimateUsageCost(usage, rates));
     return sumCosts(costs);
@@ -173,7 +176,7 @@ export function estimateThreadCost(
   thread: ThreadAnalytics,
   rates: Readonly<Record<string, ModelRate>>,
 ): CostEstimate | null {
-  if (!thread.hasDetailedUsage) return null;
+  if (!thread.hasDetailedUsage || thread.usageCoverage === "partial") return null;
   const turns = thread.turnDetails.filter(turn => turn.totalTokens > 0);
   return turns.length ? sumCosts(turns.map(turn => estimateTurnCost(turn, rates)))
     : estimateUsageCost(thread, rates);

@@ -25,12 +25,27 @@ interface SavedSession {
   title: string;
   startedAt: string;
   updatedAt: string;
+  records: RecordValue[];
+}
+interface RecordedRequestUsage {
+  uncachedInputTokens: number;
+  metrics: RequestUsage;
+  inputRecorded: boolean;
+  outputRecorded: boolean;
+}
+interface SavedToolCall {
+  call: ToolCall;
+  turn: TurnState;
+  hasStart: boolean;
+  finishedAt: string | null;
 }
 interface TurnState {
+  hasPrompt: boolean;
+  requestIds: Set<string>;
   turn: ThreadTurnAnalytics;
   lastAt: string;
   reportedDuration: boolean;
-  requests: Map<string, RequestUsage>;
+  requests: Map<string, RecordedRequestUsage>;
 }
 
 function object(value: unknown): RecordValue {
@@ -40,9 +55,11 @@ function object(value: unknown): RecordValue {
 function string(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
+function validCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
 function count(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, Math.floor(value)) : 0;
+  return validCount(value) ? value : 0;
 }
 function timestamp(value: unknown): string | null {
   const parsed = typeof value === "number" ? value : Date.parse(string(value));
@@ -57,7 +74,7 @@ function blocks(content: unknown): RecordValue[] {
 }
 function prompt(content: unknown): string {
   return typeof content === "string" ? content : blocks(content)
-    .filter(block => block.type === "text").map(block => string(block.text)).join(/* turbopackIgnore: true */ "\n");
+    .filter(block => block.type === "text").map(block => string(block.text)).join("\n");
 }
 
 // Deliberately do not follow directory symlinks or inspect settings/credentials.
@@ -95,8 +112,9 @@ function readLines(path: string, warnings: string[]): RecordValue[] {
     return [];
   }
 }
-function newTurn(id: string, message: string, at: string): TurnState {
+function newTurn(id: string, message: string, at: string, hasPrompt = false): TurnState {
   return {
+    hasPrompt, requestIds: new Set(),
     turn: threadTurnAnalyticsSchema.parse({
       id, message: message.slice(0, 12_000) || "User message unavailable",
       startedAt: at, model: "Unknown model", reasoningEffort: "unspecified",
@@ -108,10 +126,10 @@ function newTurn(id: string, message: string, at: string): TurnState {
     lastAt: at, reportedDuration: false, requests: new Map(),
   };
 }
-function requestUsage(message: RecordValue): RequestUsage | null {
+function requestUsage(message: RecordValue): RecordedRequestUsage | null {
   const usage = object(message.usage);
   if (!["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
-    .some(key => typeof usage[key] === "number")) return null;
+    .some(key => validCount(usage[key]))) return null;
   const creation = object(usage.cache_creation);
   const longWrites = count(creation.ephemeral_1h_input_tokens);
   const writes = Math.max(count(usage.cache_creation_input_tokens),
@@ -119,22 +137,38 @@ function requestUsage(message: RecordValue): RequestUsage | null {
   const cached = count(usage.cache_read_input_tokens);
   const input = count(usage.input_tokens) + cached + writes;
   return {
-    model: string(message.model) || "Unknown model",
-    inputTokens: input, peakInputTokens: input, cachedInputTokens: cached,
-    cacheWriteTokens: writes, cacheWriteLongTokens: longWrites,
-    outputTokens: count(usage.output_tokens),
+    uncachedInputTokens: count(usage.input_tokens),
+    inputRecorded: validCount(usage.input_tokens),
+    outputRecorded: validCount(usage.output_tokens),
+    metrics: {
+      model: string(message.model) || "Unknown model",
+      inputTokens: input, peakInputTokens: input, cachedInputTokens: cached,
+      cacheWriteTokens: writes, cacheWriteLongTokens: longWrites,
+      outputTokens: count(usage.output_tokens),
+    },
   };
 }
-function mergeUsage(previous: RequestUsage | undefined, next: RequestUsage): RequestUsage {
+function mergeUsage(previous: RecordedRequestUsage | undefined, next: RecordedRequestUsage): RecordedRequestUsage {
   if (!previous) return next;
+  const current = next.metrics;
+  const baseline = previous.metrics;
+  const uncachedInputTokens = Math.max(previous.uncachedInputTokens, next.uncachedInputTokens);
+  const cachedInputTokens = Math.max(baseline.cachedInputTokens, current.cachedInputTokens);
+  const cacheWriteTokens = Math.max(baseline.cacheWriteTokens, current.cacheWriteTokens);
+  const inputTokens = uncachedInputTokens + cachedInputTokens + cacheWriteTokens;
   return {
-    model: next.model === "Unknown model" ? previous.model : next.model,
-    inputTokens: Math.max(previous.inputTokens, next.inputTokens),
-    peakInputTokens: Math.max(previous.peakInputTokens, next.peakInputTokens),
-    cachedInputTokens: Math.max(previous.cachedInputTokens, next.cachedInputTokens),
-    cacheWriteTokens: Math.max(previous.cacheWriteTokens, next.cacheWriteTokens),
-    cacheWriteLongTokens: Math.max(previous.cacheWriteLongTokens, next.cacheWriteLongTokens),
-    outputTokens: Math.max(previous.outputTokens, next.outputTokens),
+    uncachedInputTokens,
+    inputRecorded: previous.inputRecorded || next.inputRecorded,
+    outputRecorded: previous.outputRecorded || next.outputRecorded,
+    metrics: {
+      model: current.model === "Unknown model" ? baseline.model : current.model,
+      inputTokens,
+      peakInputTokens: Math.max(baseline.peakInputTokens, current.peakInputTokens, inputTokens),
+      cachedInputTokens,
+      cacheWriteTokens,
+      cacheWriteLongTokens: Math.max(baseline.cacheWriteLongTokens, current.cacheWriteLongTokens),
+      outputTokens: Math.max(baseline.outputTokens, current.outputTokens),
+    },
   };
 }
 function toolKind(name: string): "shell" | "web" | "other" {
@@ -160,7 +194,7 @@ function parseTranscript(
   const project = validRecords.map(record => string(record.cwd)).find(Boolean) || saved?.project || "Unknown project";
   const turns: TurnState[] = [];
   let active: TurnState | undefined;
-  const tools = new Map<string, { call: ToolCall; turn: TurnState }>();
+  const tools = new Map<string, SavedToolCall>();
   const requestOwners = new Map<string, TurnState>();
   const userIds = new Set<string>();
   let title = saved?.title || "";
@@ -179,23 +213,30 @@ function parseTranscript(
         const tool = tools.get(string(block.tool_use_id));
         if (!tool) continue;
         tool.call.status = block.is_error === true ? "failed" : "completed";
-        tool.call.durationMs = elapsed(tool.call.startedAt, at);
+        tool.finishedAt = at;
+        if (tool.hasStart) tool.call.durationMs = elapsed(tool.call.startedAt, at);
         tool.turn.lastAt = at;
       }
-      const text = prompt(message.content).trim();
+      // Additional text on a tool_result is still tool output, not a prompt.
+      if (content.some(block => block.type === "tool_result") || record.isMeta === true) continue;
+      const text = prompt(message.content).trim()
+        || (content.some(block => block.type === "image") ? "Image attachment" : "")
+        || (content.some(block => block.type === "document") ? "Document attachment" : "");
       const userId = string(record.uuid) || `${at}:${text}`;
       if (text && record.isMeta !== true && !userIds.has(userId)) {
         userIds.add(userId);
-        active = newTurn(userId, text, at);
+        active = newTurn(userId, text, at, true);
         turns.push(active);
         if (!title) title = text;
       }
     } else if (record.type === "assistant") {
+      if (message.model === "<synthetic>") continue;
       // Claude can persist several content blocks for one API message. Count its
       // usage once, retaining the final/largest counters from streaming updates.
       const requestId = string(message.id) || string(record.requestId) || string(record.uuid) || at;
       const turn = requestOwners.get(requestId) || ensureTurn(at);
       requestOwners.set(requestId, turn);
+      turn.requestIds.add(requestId);
       turn.lastAt = at;
       const model = string(message.model);
       if (model && model !== "<synthetic>") turn.turn.model = model;
@@ -208,7 +249,7 @@ function parseTranscript(
         if (!toolId || tools.has(toolId)) continue;
         const call: ToolCall = { id: toolId, name: string(block.name) || "Unknown tool",
           startedAt: at, durationMs: null, status: "recorded", source: "transcript" };
-        tools.set(toolId, { call, turn });
+        tools.set(toolId, { call, turn, hasStart: true, finishedAt: null });
         turn.turn.toolCallDetails.push(call);
       }
       if (["end_turn", "stop_sequence", "max_tokens", "refusal"].includes(string(message.stop_reason))) {
@@ -238,25 +279,29 @@ function parseTranscript(
       const turn = turns.findLast(turn => Date.parse(turn.turn.startedAt) <= Date.parse(at)) || turns[0] || ensureTurn(at);
       const call: ToolCall = { id: toolId, name: name || "Unknown tool", startedAt: at,
         durationMs: null, status: "recorded", source: "hook" };
-      tool = { call, turn }; tools.set(toolId, tool); turn.turn.toolCallDetails.push(call);
+      tool = { call, turn, hasStart: event === "PreToolUse", finishedAt: null }; tools.set(toolId, tool); turn.turn.toolCallDetails.push(call);
     }
     if (event === "PreToolUse") {
-      const finishedAt = tool.call.durationMs === null ? null : Date.parse(tool.call.startedAt) + tool.call.durationMs;
+      tool.hasStart = true;
       tool.call.startedAt = at;
-      if (finishedAt !== null) tool.call.durationMs = Math.max(0, finishedAt - Date.parse(at));
+      if (tool.finishedAt !== null) tool.call.durationMs = elapsed(at, tool.finishedAt);
     } else {
       tool.call.status = event === "PostToolUseFailure" || tool.call.status === "failed" ? "failed" : "completed";
-      // A post-only hook cannot establish a start time for a hook-only call.
-      if (tool.call.startedAt !== at || tool.call.source === "transcript") {
-        tool.call.durationMs = elapsed(tool.call.startedAt, at);
-      }
+      tool.finishedAt = at;
+      // Repeated post-only events still cannot establish an execution start.
+      if (tool.hasStart) tool.call.durationMs = elapsed(tool.call.startedAt, at);
     }
     tool.turn.lastAt = new Date(Math.max(Date.parse(tool.turn.lastAt), Date.parse(at))).toISOString();
   }
 
   for (const state of turns) {
     const turn = state.turn;
-    turn.requestUsage = [...state.requests.values()];
+    turn.requestUsage = [...state.requests.values()].map(request => ({
+      ...request.metrics, hasCompleteUsage: request.inputRecorded && request.outputRecorded,
+    }));
+    turn.usageCoverage = !state.requests.size ? "unknown"
+      : state.requests.size === state.requestIds.size && turn.requestUsage.every(request => request.hasCompleteUsage)
+        ? "complete" : "partial";
     for (const usage of turn.requestUsage) {
       turn.inputTokens += usage.inputTokens;
       turn.cachedInputTokens += usage.cachedInputTokens;
@@ -269,14 +314,25 @@ function parseTranscript(
     turn.toolCalls = turn.toolCallDetails.length;
     turn.shellCommands = turn.toolCallDetails.filter(call => toolKind(call.name) === "shell").length;
     turn.webCalls = turn.toolCallDetails.filter(call => toolKind(call.name) === "web").length;
-    if (!state.reportedDuration) turn.durationMs = elapsed(turn.startedAt, state.lastAt);
+    if (!state.reportedDuration) {
+      if (state.hasPrompt || state.requestIds.size) {
+        turn.durationMs = elapsed(turn.startedAt, state.lastAt);
+      } else {
+        const timedTools = [...tools.values()].filter(tool => tool.turn === state && tool.hasStart && tool.finishedAt);
+        turn.durationMs = timedTools.length ? Math.max(0,
+          Math.max(...timedTools.map(tool => Date.parse(tool.finishedAt!)))
+          - Math.min(...timedTools.map(tool => Date.parse(tool.call.startedAt)))) : 0;
+      }
+    }
   }
   const details = turns.map(state => state.turn);
   const sum = (field: "durationMs" | "inputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "cacheWriteLongTokens" | "outputTokens" | "totalTokens" | "toolCalls" | "shellCommands" | "webCalls"): number =>
     details.reduce((total, turn) => total + turn[field], 0);
   const reported = turns.filter(state => state.reportedDuration).length;
-  const missingUsage = turns.filter(state => state.turn.model !== "Unknown model" && !state.requests.size).length;
-  if (missingUsage) warnings.push(`${id}: ${missingUsage} turns have no saved token usage; totals are partial.`);
+  const hasDetailedUsage = turns.some(turn => turn.requests.size > 0);
+  const usageCoverage = !hasDetailedUsage ? "unknown"
+    : details.every(turn => turn.usageCoverage === "complete") ? "complete" : "partial";
+  if (usageCoverage === "partial") warnings.push(`${id}: saved token usage is partial; recorded totals are shown and the full session cost is unknown.`);
   const updatedAt = new Date(Math.max(Date.parse(lastAt), ...turns.map(turn => Date.parse(turn.lastAt)))).toISOString();
   return threadAnalyticsSchema.parse({
     id, title: title.replace(/\s+/g, " ").slice(0, 180) || "Untitled Claude session",
@@ -291,10 +347,22 @@ function parseTranscript(
     cachedInputTokens: sum("cachedInputTokens"), cacheWriteTokens: sum("cacheWriteTokens"),
     cacheWriteLongTokens: sum("cacheWriteLongTokens"), reasoningOutputTokens: 0, contextWindow: null,
     archived: false, internal: isWorker, parentSessionId: isWorker ? parentId : null,
-    hasDetailedUsage: turns.some(turn => turn.requests.size > 0),
+    hasDetailedUsage, usageCoverage,
     isPossiblyActive: details.at(-1)?.completed === false && Date.now() - Date.parse(updatedAt) < 120_000,
     durationSource: reported === turns.length && turns.length ? "reported" : reported ? "mixed" : "estimated",
   });
+}
+
+function safelyParseTranscript(
+  path: string, records: RecordValue[], hooks: RecordValue[], saved: SavedSession | undefined,
+  warnings: string[],
+): ThreadAnalytics | null {
+  try {
+    return parseTranscript(path, records, hooks, saved, warnings);
+  } catch {
+    warnings.push(`Could not parse Claude session ${basename(path)}; other sessions are still available.`);
+    return null;
+  }
 }
 
 /** Read-only Claude Code ingestion. No Claude executable or network is used. */
@@ -313,11 +381,15 @@ export function getClaudeAnalyticsSnapshot(): AnalyticsSnapshot {
       const at = timestamp(entry.timestamp);
       if (!id || !at) continue;
       const previous = saved.get(id);
+      const historyRecords = previous?.records || [];
+      historyRecords.push({ type: "user", sessionId: id, cwd: string(entry.project), timestamp: at,
+        message: { content: string(entry.display) } });
       saved.set(id, {
         id, project: string(entry.project) || previous?.project || "Unknown project",
         title: previous?.title || string(entry.display),
         startedAt: previous && previous.startedAt < at ? previous.startedAt : at,
         updatedAt: previous && previous.updatedAt > at ? previous.updatedAt : at,
+        records: historyRecords,
       });
     }
   }
@@ -331,6 +403,8 @@ export function getClaudeAnalyticsSnapshot(): AnalyticsSnapshot {
         if (id && startedAt && updatedAt && !saved.has(id)) saved.set(id, {
           id, startedAt, updatedAt, project: string(entry.projectPath) || string(index.originalPath) || "Unknown project",
           title: string(entry.firstPrompt) || string(entry.summary),
+          records: string(entry.firstPrompt) ? [{ type: "user", sessionId: id,
+            timestamp: startedAt, message: { content: string(entry.firstPrompt) } }] : [],
         });
       }
     } catch { warnings.push("Could not read a Claude sessions index; continuing with transcripts and history."); }
@@ -388,24 +462,24 @@ export function getClaudeAnalyticsSnapshot(): AnalyticsSnapshot {
   }
   for (const [key, group] of transcriptGroups) {
     const sessionHooks = (hooks.get(key) || []).sort((a, b) => Date.parse(timestamp(a.timestamp)!) - Date.parse(timestamp(b.timestamp)!));
-    const thread = parseTranscript(group.path, group.records, sessionHooks, saved.get(key), warnings);
+    const thread = safelyParseTranscript(group.path, group.records, sessionHooks, saved.get(key), warnings);
     if (thread) threads.push(thread);
   }
   // History-only sessions are visible but never assigned invented usage.
   for (const session of saved.values()) {
     if (threads.some(thread => thread.id === session.id)) continue;
     const hookRecords = hooks.get(session.id) || [];
-    const records: RecordValue[] = [{ type: "user", sessionId: session.id, cwd: session.project,
-      timestamp: session.startedAt, message: { content: session.title } },
+    const records: RecordValue[] = [...session.records,
+      { type: "metadata", sessionId: session.id, cwd: session.project, timestamp: session.startedAt },
       { type: "metadata", timestamp: session.updatedAt }];
-    const thread = parseTranscript("history.jsonl", records, hookRecords, session, warnings);
+    const thread = safelyParseTranscript("history.jsonl", records, hookRecords, session, warnings);
     if (thread) { thread.source = "Claude history (transcript unavailable)"; threads.push(thread); }
   }
   // Logs can be the only retained record of a session.
   for (const [id, entries] of hooks) {
     if (threads.some(thread => thread.id === id)) continue;
     entries.sort((a, b) => Date.parse(timestamp(a.timestamp)!) - Date.parse(timestamp(b.timestamp)!));
-    const thread = parseTranscript("hooks.jsonl", [{ type: "metadata", sessionId: id,
+    const thread = safelyParseTranscript("hooks.jsonl", [{ type: "metadata", sessionId: id,
       cwd: string(entries[0].cwd), timestamp: entries[0].timestamp }], entries, undefined, warnings);
     if (thread) {
       thread.id = id;

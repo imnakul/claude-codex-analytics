@@ -14,6 +14,7 @@ export const toolCallSchema = z.object({
 
 export const requestUsageSchema = z.object({
   model: z.string(),
+  hasCompleteUsage: z.boolean().optional(),
   inputTokens: z.number().int().nonnegative(),
   peakInputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
@@ -40,6 +41,7 @@ export const threadTurnAnalyticsSchema = z.object({
   shellCommands: z.number().int().nonnegative(),
   webCalls: z.number().int().nonnegative(),
   completed: z.boolean(),
+  usageCoverage: z.enum(["complete", "partial", "unknown"]).optional(),
   cacheWriteTokens: z.number().int().nonnegative().default(0),
   cacheWriteLongTokens: z.number().int().nonnegative().default(0),
   toolCallDetails: z.array(toolCallSchema).default([]),
@@ -75,6 +77,7 @@ export const threadAnalyticsSchema = z.object({
   archived: z.boolean(),
   internal: z.boolean(),
   hasDetailedUsage: z.boolean(),
+  usageCoverage: z.enum(["complete", "partial", "unknown"]).optional(),
   isPossiblyActive: z.boolean(),
   cacheWriteTokens: z.number().int().nonnegative().default(0),
   cacheWriteLongTokens: z.number().int().nonnegative().default(0),

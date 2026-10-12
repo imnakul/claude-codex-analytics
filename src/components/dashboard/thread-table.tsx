@@ -149,7 +149,7 @@ export function ThreadTable({
                     {item.thread.hasDetailedUsage || !item.thread.source.startsWith("Claude") ? formatTokens(item.thread.totalTokens) : "Unknown"}
                   </span>
                   <span className="mt-1 block text-[11px] text-[#666b5d]">
-                    {item.thread.hasDetailedUsage ? `${formatTokens(item.thread.outputTokens)} out` : "No saved usage"}
+                    {item.thread.hasDetailedUsage ? `${formatTokens(item.thread.outputTokens)} out${item.thread.usageCoverage === "partial" ? " / partial" : ""}` : "No saved usage"}
                   </span>
                 </td>
                 <td className="px-4 py-4 align-top">

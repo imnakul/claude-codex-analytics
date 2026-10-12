@@ -22,6 +22,14 @@ the first public release.
 - Explicit documentation for privacy boundaries, compatibility, configuration,
   API-equivalent pricing, and release verification.
 
+### Fixed
+
+- Count attachment-only and all history-only prompts; exclude tool-result
+  annotations and synthetic responses from usage records.
+- Identify incomplete request counters and avoid pricing partial sessions.
+- Keep post-only tool timings unknown, prevent overlapping refreshes, and update
+  open session details after refresh or pricing changes.
+
 ### Changed
 
 - Renamed the product to Codex Analytics Ledger.

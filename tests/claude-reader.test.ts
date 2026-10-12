@@ -195,8 +195,13 @@ test("dated model IDs inherit edited base-model rates", () => {
   assert.equal(estimateThreadCost(thread, rates)?.total, 0.0011);
 });
 
-test("the optional hook collector writes supported metadata without tool content", () => {
-  const result = spawnSync("python3", ["scripts/log-claude-tool.py"], {
+test("the optional hook collector writes supported metadata without tool content", context => {
+  const python = ["python3", "python", "py"].find(command => {
+    const version = spawnSync(command, ["--version"], { encoding: "utf8" });
+    return version.status === 0 && /Python 3\./.test(`${version.stdout}${version.stderr}`);
+  });
+  if (!python) { context.skip("The optional hook collector requires Python 3."); return; }
+  const result = spawnSync(python, ["scripts/log-claude-tool.py"], {
     input: JSON.stringify({ session_id: "collector-session", tool_use_id: "collector-tool", tool_name: "Bash",
       hook_event_name: "PreToolUse", tool_input: { command: "ARGUMENT_SECRET" }, tool_response: "RESULT_SECRET", error: "ERROR_SECRET" }),
     env: process.env, encoding: "utf8",
@@ -208,4 +213,109 @@ test("the optional hook collector writes supported metadata without tool content
   const snapshot = getClaudeAnalyticsSnapshot();
   assert.equal(snapshot.threads[0].toolCalls, 1);
   assert.equal(snapshot.threads[0].id, "collector-session");
+});
+
+test("counts image-only prompts and keeps tool-result annotations out of the prompt ledger", () => {
+  write("projects/project/session-a.jsonl", [
+    { ...user(), message: { content: [{ type: "image", source: { type: "base64", data: "IMAGE_SECRET" } }] } },
+    assistant(1, "image-1", [{ type: "tool_use", id: "image-tool", name: "Read" }]),
+    { type: "user", uuid: "tool-result", timestamp: at(2), message: { content: [
+      { type: "tool_result", tool_use_id: "image-tool", content: "RESULT_SECRET" },
+      { type: "text", text: "RESULT_ANNOTATION_SECRET" },
+    ] } },
+    { ...user(3), message: { content: [{ type: "image", source: { type: "base64", data: "IMAGE_SECRET" } }] } },
+    assistant(4, "image-2", [], { stop_reason: "end_turn" }),
+  ]);
+  const snapshot = getClaudeAnalyticsSnapshot();
+  const thread = snapshot.threads[0];
+  assert.equal(thread.prompts, 2);
+  assert.equal(thread.turns, 2);
+  assert.equal(thread.turnDetails[0].message, "Image attachment");
+  assert.equal(thread.turnDetails[0].toolCalls, 1);
+  assert.ok(!JSON.stringify(snapshot).includes("_SECRET"));
+});
+
+test("retains every unique prompt from history when the transcript is unavailable", () => {
+  const entries = [0, 2, 4].map(second => ({ sessionId: "history", project: "/example/project",
+    timestamp: Date.parse(at(second)), display: `Prompt ${second}` }));
+  write("history.jsonl", [...entries, entries[0]]);
+  const thread = getClaudeAnalyticsSnapshot().threads[0];
+  assert.equal(thread.prompts, 3);
+  assert.equal(thread.turns, 3);
+  assert.deepEqual(thread.turnDetails.map(turn => turn.message), ["Prompt 0", "Prompt 2", "Prompt 4"]);
+  assert.equal(thread.activeDurationMs, 0);
+  assert.equal(thread.hasDetailedUsage, false);
+  assert.equal(thread.usageCoverage, "unknown");
+});
+
+test("marks a turn with missing request usage as partial and leaves its full cost unknown", () => {
+  write("projects/project/session-a.jsonl", [user(), assistant(1, "known", []),
+    assistant(2, "missing", [], { usage: undefined, stop_reason: "end_turn" }),
+  ]);
+  const snapshot = getClaudeAnalyticsSnapshot();
+  const thread = snapshot.threads[0];
+  assert.equal(thread.totalTokens, 200);
+  assert.equal(thread.usageCoverage, "partial");
+  assert.equal(thread.turnDetails[0].usageCoverage, "partial");
+  assert.equal(estimateTurnCost(thread.turnDetails[0], {}), null);
+  assert.equal(estimateThreadCost(thread, {}), null);
+  assert.ok(snapshot.warnings.some(warning => warning.includes("partial")));
+});
+
+test("merges separately recorded streaming counters into complete request usage", () => {
+  write("projects/project/session-a.jsonl", [user(),
+    assistant(1, "streaming", [], { usage: { input_tokens: 100 } }),
+    assistant(2, "streaming", [], { usage: { output_tokens: 20 }, stop_reason: "end_turn" }),
+  ]);
+  const thread = getClaudeAnalyticsSnapshot().threads[0];
+  assert.equal(thread.totalTokens, 120);
+  assert.equal(thread.usageCoverage, "complete");
+  assert.equal(thread.turnDetails[0].requestUsage[0].hasCompleteUsage, true);
+  assert.ok(estimateThreadCost(thread, {}));
+});
+
+test("keeps repeated post-only hook records at unknown duration", () => {
+  process.env.CLAUDE_LOG_DIR = join(root, "logs");
+  write("logs/tools.jsonl", [2, 3].map(second => ({ session_id: "post-only", timestamp: at(second),
+    hook_event_name: "PostToolUse", tool_use_id: "tool", tool_name: "Read" })));
+  const thread = getClaudeAnalyticsSnapshot().threads[0];
+  assert.equal(thread.toolCalls, 1);
+  assert.equal(thread.turnDetails[0].toolCallDetails[0].durationMs, null);
+  assert.equal(thread.activeDurationMs, 0);
+});
+
+
+test("isolates an invalid session instead of losing other available sessions", () => {
+  write("projects/project/valid.jsonl", [user(), assistant(1, "valid", [], { stop_reason: "end_turn" })]);
+  write("projects/project/invalid.jsonl", [user(0, "Invalid example", "invalid"),
+    { ...assistant(1, "invalid", [], { usage: { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 100 } }), sessionId: "invalid" },
+  ]);
+  const snapshot = getClaudeAnalyticsSnapshot();
+  assert.equal(snapshot.threads.length, 1);
+  assert.equal(snapshot.threads[0].id, "session-a");
+  assert.ok(snapshot.warnings.some(warning => warning.includes("invalid.jsonl")));
+});
+
+test("ignores synthetic replies when assessing complete API usage", () => {
+  write("projects/project/session-a.jsonl", [user(), assistant(1, "real", [], { stop_reason: "end_turn" }),
+    assistant(2, "synthetic", [{ type: "text", text: "LOCAL_ERROR_SECRET" }], { model: "<synthetic>", usage: undefined }),
+  ]);
+  const snapshot = getClaudeAnalyticsSnapshot();
+  assert.equal(snapshot.threads[0].usageCoverage, "complete");
+  assert.equal(snapshot.threads[0].turnDetails[0].requestUsage.length, 1);
+  assert.ok(estimateThreadCost(snapshot.threads[0], {}));
+  assert.ok(!JSON.stringify(snapshot).includes("_SECRET"));
+});
+
+
+test("merges input and cache counters from separate updates without losing cache writes", () => {
+  write("projects/project/session-a.jsonl", [user(),
+    assistant(1, "split-cache", [], { usage: { input_tokens: 100, cache_read_input_tokens: 50 } }),
+    assistant(2, "split-cache", [], { usage: { cache_creation_input_tokens: 30, output_tokens: 20 }, stop_reason: "end_turn" }),
+  ]);
+  const thread = getClaudeAnalyticsSnapshot().threads[0];
+  assert.equal(thread.inputTokens, 180);
+  assert.equal(thread.totalTokens, 200);
+  assert.equal(thread.peakInputTokens, 180);
+  assert.equal(thread.usageCoverage, "complete");
 });
