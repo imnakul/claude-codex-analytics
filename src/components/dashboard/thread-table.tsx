@@ -59,7 +59,7 @@ export function ThreadTable({
       <div className="hidden overflow-x-auto border border-[#30332b] bg-[#171914] md:block">
         <table className="w-full min-w-[980px] border-collapse text-left">
           <caption className="sr-only">
-            Codex thread runtime, token usage, model, and estimated cost
+            Session runtime, token usage, model, and estimated cost
           </caption>
           <thead>
             <tr className="border-b border-[#3a3d34] bg-[#1c1e18] font-mono text-[10px] uppercase tracking-[0.16em] text-[#7e8373]">
@@ -146,10 +146,10 @@ export function ThreadTable({
                 </td>
                 <td className="px-4 py-4 align-top">
                   <span className="font-mono text-sm font-semibold text-[#d8d4c9]">
-                    {formatTokens(item.thread.totalTokens)}
+                    {item.thread.hasDetailedUsage || !item.thread.source.startsWith("Claude") ? formatTokens(item.thread.totalTokens) : "Unknown"}
                   </span>
                   <span className="mt-1 block text-[11px] text-[#666b5d]">
-                    {formatTokens(item.thread.outputTokens)} out
+                    {item.thread.hasDetailedUsage ? `${formatTokens(item.thread.outputTokens)} out${item.thread.usageCoverage === "partial" ? " / partial" : ""}` : "No saved usage"}
                   </span>
                 </td>
                 <td className="px-4 py-4 align-top">
@@ -216,7 +216,7 @@ export function ThreadTable({
               <div>
                 <dt className="text-[10px] text-[#666b5d]">Tokens</dt>
                 <dd className="mt-1 font-mono text-xs text-[#d8d4c9]">
-                  {formatTokens(item.thread.totalTokens)}
+                  {item.thread.hasDetailedUsage || !item.thread.source.startsWith("Claude") ? formatTokens(item.thread.totalTokens) : "Unknown"}
                 </dd>
               </div>
               <div className="text-right">

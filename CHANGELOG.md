@@ -10,10 +10,25 @@ the first public release.
 
 ### Added
 
+- A Codex / Claude switch within the existing local dashboard.
+- Read-only Claude Code transcript, history, index, and subagent analytics with
+  per-request model usage, cache-write pricing, and a tool-call ledger.
+- Optional timestamped tool-hook log ingestion and a metadata-only Python hook
+  collector; missing data and estimated runtime are identified in the UI.
+- Synthetic reader, pricing, and provider API regression tests.
+
 - Public security policy, contribution guide, code of conduct, and GitHub
   collaboration templates.
 - Explicit documentation for privacy boundaries, compatibility, configuration,
   API-equivalent pricing, and release verification.
+
+### Fixed
+
+- Count attachment-only and all history-only prompts; exclude tool-result
+  annotations and synthetic responses from usage records.
+- Identify incomplete request counters and avoid pricing partial sessions.
+- Keep post-only tool timings unknown, prevent overlapping refreshes, and update
+  open session details after refresh or pricing changes.
 
 ### Changed
 

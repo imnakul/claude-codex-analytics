@@ -145,7 +145,7 @@ function normalizeWindowsPath(path: string): string {
 }
 
 function parseConfiguredSqliteHome(codexHome: string): string | null {
-  const configPath = join(codexHome, "config.toml");
+  const configPath = join(/* turbopackIgnore: true */ codexHome, "config.toml");
   if (!existsSync(/* turbopackIgnore: true */ configPath)) {
     return null;
   }
@@ -166,10 +166,10 @@ function parseConfiguredSqliteHome(codexHome: string): string | null {
 }
 
 function locateCodexState(): { codexHome: string; databasePath: string } {
-  const codexHome = resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"));
+  const codexHome = resolve(/* turbopackIgnore: true */ process.env.CODEX_HOME ?? join(/* turbopackIgnore: true */ homedir(), ".codex"));
   const configuredSqliteHome =
     parseConfiguredSqliteHome(codexHome) ?? process.env.CODEX_SQLITE_HOME;
-  const roots = [configuredSqliteHome, codexHome, join(codexHome, "sqlite")]
+  const roots = [configuredSqliteHome, codexHome, join(/* turbopackIgnore: true */ codexHome, "sqlite")]
     .filter((value): value is string => Boolean(value))
     .map((value) => resolve(/* turbopackIgnore: true */ value));
 
@@ -202,7 +202,7 @@ function locateCodexState(): { codexHome: string; databasePath: string } {
 }
 
 function readProjectMetadata(codexHome: string): ProjectMetadata {
-  const globalStatePath = join(codexHome, ".codex-global-state.json");
+  const globalStatePath = join(/* turbopackIgnore: true */ codexHome, ".codex-global-state.json");
   if (!existsSync(/* turbopackIgnore: true */ globalStatePath)) {
     return { projectlessIds: new Set(), threadPaths: new Map() };
   }
@@ -280,6 +280,10 @@ function completeTurn(
   timeToFirstTokenMs: number | null,
 ): ThreadTurnAnalytics {
   return {
+    cacheWriteTokens: 0,
+    cacheWriteLongTokens: 0,
+    requestUsage: [],
+    toolCallDetails: [],
     cachedInputTokens: turn.accumulatedUsage.cached_input_tokens,
     completed,
     durationMs,
@@ -578,6 +582,10 @@ function mapThread(
 
   return {
     activeDurationMs: session?.activeDurationMs ?? 0,
+    cacheWriteTokens: 0,
+    cacheWriteLongTokens: 0,
+    durationSource: "reported",
+    parentSessionId: null,
     archived: row.archived === 1,
     cachedInputTokens: session?.cachedInputTokens ?? 0,
     contextWindow: session?.contextWindow ?? null,
@@ -645,6 +653,8 @@ export function getAnalyticsSnapshot(): AnalyticsSnapshot {
     });
 
     return analyticsSnapshotSchema.parse({
+      provider: "codex",
+      dataHome: codexHome,
       codexHome,
       databasePath,
       generatedAt: new Date().toISOString(),

@@ -13,7 +13,7 @@ export interface PricedTurn {
 
 export interface ModelAggregate {
   averageCost: number | null;
-  averageDurationMs: number;
+  averageDurationMs: number | null;
   averageTokens: number;
   key: string;
   label: string;
