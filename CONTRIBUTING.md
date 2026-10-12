@@ -17,7 +17,7 @@ Requirements:
 
 - Node.js 24 or newer
 - npm
-- A local Codex installation for manual testing
+- Local Codex or Claude Code data for manual testing (use synthetic data for PRs)
 
 Install and start:
 
@@ -45,14 +45,15 @@ Open <http://localhost:3000>. Keep the server bound to `127.0.0.1`.
 Run all required checks before opening a pull request:
 
 ```bash
+npm run test
 npx tsc --noEmit
 npx eslint . --fix
 npm run build
 ```
 
-The project does not yet have automated tests. New parsing behavior should add
-synthetic fixtures and tests when the test harness is introduced. Until then,
-describe the sanitized manual verification performed in the pull request.
+Synthetic tests cover provider selection, Claude parsing and hook reconciliation,
+and API-equivalent pricing. Add synthetic regression cases for state-format
+changes and describe sanitized browser verification in the pull request.
 
 ## Pull requests
 
