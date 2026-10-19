@@ -26,7 +26,7 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:3000>. Keep the server bound to `127.0.0.1`.
+Open <http://localhost:3000>. Do not expose the development server publicly.
 
 ## Architecture expectations
 

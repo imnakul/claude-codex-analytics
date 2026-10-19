@@ -55,14 +55,20 @@ import {
 const pricingStorageSchema = z.record(z.string(), modelRateSchema);
 const PRICING_STORAGE_KEY = "codex-analytics-ledger:model-rates:v2";
 const VIEW_MODE_STORAGE_KEY = "codex-analytics-ledger:view-mode:v1";
+const ANALYTICS_REFRESH_TIMEOUT_MS = 30_000;
+const EMPTY_SNAPSHOT: AnalyticsSnapshot = {
+  provider: "codex",
+  dataHome: "",
+  codexHome: "",
+  databasePath: "",
+  generatedAt: "",
+  threads: [],
+  warnings: [],
+};
 
 const sortOptionSchema = z.enum(["cost", "recent", "time", "tokens"]);
 type SortOption = z.infer<typeof sortOptionSchema>;
 type Theme = "dark" | "light";
-
-interface CodexDashboardProps {
-  initialData: AnalyticsSnapshot;
-}
 
 function buildModelAggregates(
   items: PricedThread[],
@@ -171,12 +177,14 @@ function projectSortValue(items: PricedThread[], sort: SortOption): number {
 }
 
 export function CodexDashboard({
-  initialData,
-}: CodexDashboardProps): React.ReactNode {
-  const [snapshot, setSnapshot] = useState(initialData);
+  initialProvider = "codex",
+}: { initialProvider?: AnalyticsProvider }): React.ReactNode {
+  const [snapshot, setSnapshot] = useState<AnalyticsSnapshot>(() => ({
+    ...EMPTY_SNAPSHOT,
+    provider: initialProvider,
+  }));
   const provider = snapshot.provider;
   const providerLabel = provider === "claude" ? "Claude" : "Codex";
-  const refreshInFlight = useRef(false);
   const [query, setQuery] = useState("");
   const [projectFilter, setProjectFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
@@ -191,6 +199,9 @@ export function CodexDashboard({
   const [pricingOpen, setPricingOpen] = useState(false);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+  const refreshInFlight = useRef(false);
+  const hasSnapshot = useRef(false);
 
   const observedModels = useMemo(
     () =>
@@ -253,7 +264,10 @@ export function CodexDashboard({
   }, [groupByProject, viewModeHydrated]);
 
   const refresh = useCallback(async (nextProvider: AnalyticsProvider = provider): Promise<void> => {
-    if (document.visibilityState === "hidden" || refreshInFlight.current) {
+    if (
+      refreshInFlight.current ||
+      (document.visibilityState === "hidden" && hasSnapshot.current)
+    ) {
       return;
     }
 
@@ -264,6 +278,7 @@ export function CodexDashboard({
       const response = await fetch(`/api/analytics?provider=${nextProvider}&refresh=${Date.now()}`, {
         cache: "no-store",
         headers: { "Cache-Control": "no-cache" },
+        signal: AbortSignal.timeout(ANALYTICS_REFRESH_TIMEOUT_MS),
       });
       const raw: unknown = await response.json();
       if (!response.ok) {
@@ -278,19 +293,32 @@ export function CodexDashboard({
         setEffortFilter("all"); setSelectedThreadId(null); setPricingOpen(false);
       }
       setSnapshot(next);
+      hasSnapshot.current = true;
       const url = new URL(window.location.href);
       url.searchParams.set("provider", next.provider);
       window.history.replaceState(null, "", url);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Analytics refresh failed.";
+        error instanceof DOMException && error.name === "TimeoutError"
+          ? "Analytics refresh timed out after 30 seconds"
+          : error instanceof Error
+            ? error.message
+            : "Analytics refresh failed.";
       console.error("[codex-analytics-ledger] Refresh failed", error);
       setRefreshError(message);
     } finally {
       refreshInFlight.current = false;
       setRefreshing(false);
+      setInitialLoadComplete(true);
     }
   }, [provider]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!hasSnapshot.current) void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refresh]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -558,14 +586,31 @@ export function CodexDashboard({
           <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[10px] text-[#676c5e]">
             <span className="flex items-center gap-1.5">
               <Database aria-hidden="true" size={12} />
-              {providerLabel} / {snapshot.threads.length} indexed sessions
+              {initialLoadComplete
+                ? `${providerLabel} / ${snapshot.threads.length} indexed sessions`
+                : "Indexing local threads…"}
             </span>
-            <span>Updated {new Date(snapshot.generatedAt).toLocaleTimeString()}</span>
-            <span className="hidden max-w-xl truncate sm:inline">
-              {snapshot.databasePath}
-            </span>
+            {snapshot.generatedAt ? (
+              <span>Updated {new Date(snapshot.generatedAt).toLocaleTimeString()}</span>
+            ) : null}
+            {snapshot.databasePath ? (
+              <span className="hidden max-w-xl truncate sm:inline">
+                {snapshot.databasePath}
+              </span>
+            ) : null}
           </div>
         </header>
+
+        {!initialLoadComplete ? (
+          <div
+            aria-live="polite"
+            className="mt-4 flex items-center gap-3 border border-[#3d4136] bg-[#171914] p-3 text-sm text-[#b0b5a4]"
+            role="status"
+          >
+            <RefreshCw aria-hidden="true" className="animate-spin shrink-0" size={16} />
+            <p>Reading local {providerLabel} analytics. The dashboard controls remain available.</p>
+          </div>
+        ) : null}
 
         {refreshError ? (
           <div
@@ -574,7 +619,12 @@ export function CodexDashboard({
             role="alert"
           >
             <WifiOff aria-hidden="true" className="mt-0.5 shrink-0" size={16} />
-            <p>{refreshError}. Showing the last successful snapshot.</p>
+            <p>
+              {refreshError}.
+              {snapshot.generatedAt
+                ? " Showing the last successful snapshot."
+                : " Check the terminal for details, then try refresh again."}
+            </p>
           </div>
         ) : null}
 
@@ -706,7 +756,7 @@ export function CodexDashboard({
                 type="button"
               >
                 <Layers3 aria-hidden="true" size={14} />
-                {groupByProject ? "Grouped" : "Isolated"}
+                {groupByProject ? "Isolated" : "Grouped"}
               </button>
             </div>
           </div>

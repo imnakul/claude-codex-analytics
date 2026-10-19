@@ -40,7 +40,7 @@ with the reporter after a fix or mitigation is available.
 
 The supported default assumes:
 
-- The standard scripts are used, preserving the `127.0.0.1` binding.
+- The standard scripts are used and the dashboard is opened through `localhost`.
 - The machine and local user account are trusted.
 - Codex state is readable only by intended local users.
 - The dashboard is not placed behind a public proxy or port-forward.

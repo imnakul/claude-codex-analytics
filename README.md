@@ -1,20 +1,23 @@
+# Local Codex & Claude Analytics Ledger
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./public/brand/codex-analytics-wordmark-dark.png" />
   <source media="(prefers-color-scheme: light)" srcset="./public/brand/codex-analytics-wordmark-light.png" />
   <img src="./public/brand/codex-analytics-wordmark-light.png" alt="Codex Analytics Ledger" width="560" />
 </picture>
 
-Codex Analytics Ledger is a privacy-first, local-only dashboard for understanding
-how you use Codex: threads, models, runtime, token usage, API-equivalent cost
-estimates, and task-level details.
+Local Codex & Claude Analytics Ledger is a privacy-first, local-only dashboard
+for understanding how you use Codex and Claude Code: threads and sessions,
+models, runtime, token usage, API-equivalent cost estimates, and task-level details.
 
-**See where your Codex time, tokens, and money go—without sending your work
-anywhere.** Compare models, inspect individual tasks, understand active runtime,
+**See where your Codex and Claude Code time, tokens, and money go—without sending
+your work anywhere.** Compare models, inspect individual tasks, understand active runtime,
 and estimate API-equivalent costs from one focused local dashboard.
 
-It reads Codex state on the same machine and does not call an AI model, upload
-Codex content, or send prompts to an analytics service. The included scripts also
-disable Next.js telemetry and bind the server to `127.0.0.1`.
+It reads Codex state and Claude Code session files on the same machine and does
+not call an AI model, upload session content, or send prompts to an analytics
+service. The included scripts also disable Next.js telemetry. The standard local
+URL is `http://localhost:3000`.
 
 > [!IMPORTANT]
 > This project is designed for local use. Do not expose it to a LAN or the
@@ -24,13 +27,15 @@ disable Next.js telemetry and bind the server to `127.0.0.1`.
 
 > [!TIP]
 > **Star this repository if you find Codex Analytics Ledger useful.** It helps
-> more Codex users discover the project and supports continued development.
+> more Codex and Claude Code users discover the project and supports continued
+> development.
 
 ## Project status
 
-Codex Analytics Ledger is pre-1.0 software. It reads internal Codex SQLite and
-JSONL formats that may change between Codex releases. A Codex update can require
-a corresponding reader update even when this repository has not changed.
+The ledger is pre-1.0 software. It reads internal Codex SQLite and JSONL formats
+and Claude Code session files that may change between provider releases. A Codex
+or Claude Code update can require a corresponding reader update even when this
+repository has not changed.
 
 Synthetic tests cover Claude ingestion, tool-log reconciliation, pricing, and
 provider selection. Tests, TypeScript, ESLint, and a production build are the
@@ -38,7 +43,7 @@ required verification baseline.
 
 ## What it shows
 
-- Threads across local Codex projects
+- Threads and sessions across local Codex and Claude Code projects
 - Model and reasoning effort per thread and task
 - Last-updated time, active duration, and wall-clock duration
 - Input, cached-input, output, reasoning-output, and total tokens
@@ -90,15 +95,14 @@ npm run build
 npm run start
 ```
 
-The development and production scripts explicitly bind to `127.0.0.1`, so the
-server accepts connections only from the same machine. They also set
-`NEXT_TELEMETRY_DISABLED=1`. Running Next.js directly instead of using the
+The development and production scripts use the standard Next.js host behavior
+and set `NEXT_TELEMETRY_DISABLED=1`. Running Next.js directly instead of using the
 included scripts may use Next.js defaults.
 
 ## Switch between Codex and Claude
 
 Use the **Codex / Claude** switch at the top of the dashboard. Both providers use
-this same local app; the repository, package name, and branding stay unchanged.
+this same local app; the repository, package name, and existing logo stay unchanged.
 You can open `http://localhost:3000/?provider=claude` directly, including on a
 machine with no Codex installation. Switching resets provider-specific filters
 and closes the selected session. Refresh always reads the selected provider,
@@ -232,8 +236,8 @@ value takes precedence over `CODEX_SQLITE_HOME`.
 Codex Analytics Ledger is intentionally local-first:
 
 - SQLite is opened with `readOnly: true`.
-- The app does not write to Codex state or session files.
-- Standard scripts listen only on `127.0.0.1`.
+- The app does not write to Codex state or Claude Code session files.
+- The documented local URL is `http://localhost:3000`.
 - Standard scripts disable anonymous Next.js telemetry.
 - There are no application analytics SDKs, hosted databases, model calls, or API
   keys.
@@ -381,18 +385,21 @@ Roadmap items are plans, not current functionality.
 Copy the prompt below after cloning the repository:
 
 ```text
-You are setting up Codex Analytics Ledger, a local-only Next.js analytics dashboard.
+You are setting up Local Codex & Claude Analytics Ledger, a local-only Next.js
+analytics dashboard for Codex and Claude Code.
 
 1. Inspect README.md, AGENTS.md, and the existing source before changing code.
 2. Install dependencies with `npm ci` (use `npm.cmd` on Windows when needed).
 3. Confirm Node.js is version 24 or newer.
 4. Keep all analytics local. Never upload prompts, transcripts, project names,
    SQLite files, authentication data, environment variables, or machine paths.
-5. Do not modify Codex state. The reader must remain read-only.
-6. Use the default Codex location unless I provide a different CODEX_HOME or
-   CODEX_SQLITE_HOME value. Set overrides only in the current shell or .env.local.
+5. Do not modify Codex state or Claude Code session files. The readers must remain
+   read-only.
+6. Use the default provider locations unless I provide a different CODEX_HOME,
+   CODEX_SQLITE_HOME, or CLAUDE_CONFIG_DIR value. Set overrides only in the current
+   shell or .env.local.
 7. Start the app with `npm run dev` and open http://localhost:3000.
-8. Do not remove the 127.0.0.1 binding or expose the app remotely.
+8. Do not expose the app through a public reverse proxy or untrusted network.
 9. Run `npx tsc --noEmit`, `npx eslint . --fix`, and `npm run build` after changes.
 10. Never commit .env files, .codex data, databases, JSONL sessions, build output,
     or user-specific paths.

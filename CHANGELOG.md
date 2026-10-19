@@ -32,8 +32,12 @@ the first public release.
 
 ### Changed
 
+- Introduced the README as Local Codex & Claude Analytics Ledger and clarified
+  that features, compatibility, and read-only privacy cover both providers.
+- Load analytics after the dashboard renders, preserving provider links and
+  switching, with an initial loading message and a 30-second refresh timeout.
 - Renamed the product to Codex Analytics Ledger.
-- Bound standard development and production scripts to `127.0.0.1`.
+- Documented `http://localhost:3000` as the standard local dashboard URL.
 - Disabled Next.js telemetry in standard scripts.
 - Aligned SQLite configuration precedence with current Codex documentation.
 - Replaced detailed analytics API error responses with a generic client message.

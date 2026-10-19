@@ -8,9 +8,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "cross-env NEXT_TELEMETRY_DISABLED=1 next dev --hostname 127.0.0.1",
+    "dev": "cross-env NEXT_TELEMETRY_DISABLED=1 next dev",
     "build": "cross-env NEXT_TELEMETRY_DISABLED=1 next build",
-    "start": "cross-env NEXT_TELEMETRY_DISABLED=1 next start --hostname 127.0.0.1",
+    "start": "cross-env NEXT_TELEMETRY_DISABLED=1 next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "verify": "npm run test && npm run typecheck && npm run lint && npm run build",
